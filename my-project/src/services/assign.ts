@@ -4,13 +4,18 @@ import { sql } from "../db";
 const SOLVER_URL = process.env.SOLVER_URL ?? "http://localhost:8001";
 
 type SolverAssignment = { taskId: number; userId: number };
+type SlotRow = { id: number; starts_at: string; ends_at: string };
+type TaskRow = { id: number; zone_id: number; timeslot_id: number; required_skill: string | null; needed: number };
+type UserRow = { id: number; skills: string[] | null; max_hours: number };
+type AvailRow = { user_id: number; timeslot_id: number };
+type PrefRow = { user_id: number; zone_id: number; rank: number };
 
 export async function runAssignment(eventId: number) {
   // 1. Load this event's timeslots and tasks
-  const slots = await sql`
-    SELECT * FROM timeslots WHERE event_id = ${eventId} ORDER BY starts_at`;
-  const tasks = await sql`
-    SELECT * FROM tasks WHERE event_id = ${eventId}`;
+  const slots = (await sql`
+    SELECT * FROM timeslots WHERE event_id = ${eventId} ORDER BY starts_at`) as unknown as SlotRow[];
+  const tasks = (await sql`
+    SELECT * FROM tasks WHERE event_id = ${eventId}`) as unknown as TaskRow[];
 
   if (!slots.length || !tasks.length) {
     throw new Error("Event has no timeslots or tasks");
@@ -20,12 +25,12 @@ export async function runAssignment(eventId: number) {
   const taskIds: number[] = tasks.map((t) => t.id);
 
   // 2. Load volunteers, their availability for these slots, and their zone preferences
-  const [users, avail, prefs] = await Promise.all([
+  const [users, avail, prefs] = (await Promise.all([
     sql`SELECT id, skills, max_hours FROM users WHERE role = 'volunteer'`,
     sql`SELECT user_id, timeslot_id FROM availability
         WHERE timeslot_id = ANY(${slotIds})`,
     sql`SELECT user_id, zone_id, rank FROM volunteer_preferences`,
-  ]);
+  ])) as unknown as [UserRow[], AvailRow[], PrefRow[]];
 
   // 3. Index once instead of filtering per user
   const availByUser = new Map<number, number[]>();
