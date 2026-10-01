@@ -1,6 +1,58 @@
 import { getCurrentUser } from "@/lib/auth";
 import { roleLabel } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
+
+type Activity = { when: Date; msg: string };
+
+async function getRecentActivity(): Promise<Activity[]> {
+  const [issues, evacs] = await Promise.all([
+    prisma.issue.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 8,
+      select: {
+        id: true,
+        type: true,
+        description: true,
+        createdAt: true,
+        acknowledgedAt: true,
+        resolvedAt: true,
+        escalationLevel: true,
+        escalateAt: true,
+      },
+    }),
+    prisma.evacuation.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 3,
+      select: { id: true, reason: true, createdAt: true, endedAt: true },
+    }),
+  ]);
+
+  const items: Activity[] = [];
+  for (const i of issues) {
+    const label = i.description?.trim() || `${i.type} issue`;
+    items.push({ when: i.createdAt, msg: `New ${i.type} issue #${i.id} — ${label}` });
+    if (i.acknowledgedAt) items.push({ when: i.acknowledgedAt, msg: `Issue #${i.id} acknowledged` });
+    if (i.resolvedAt) items.push({ when: i.resolvedAt, msg: `Issue #${i.id} resolved` });
+    if (i.escalationLevel && i.escalationLevel >= 1 && !i.acknowledgedAt && i.escalateAt) {
+      items.push({ when: i.escalateAt, msg: `Issue #${i.id} escalated to head coordinator` });
+    }
+  }
+  for (const e of evacs) {
+    items.push({ when: e.createdAt, msg: `Evacuation triggered: ${e.reason ?? "no reason given"}` });
+    if (e.endedAt) items.push({ when: e.endedAt, msg: `Evacuation #${e.id} ended` });
+  }
+
+  return items.sort((a, b) => b.when.getTime() - a.when.getTime()).slice(0, 8);
+}
+
+function relTime(d: Date) {
+  const diff = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+  if (diff < 60) return `${diff}s`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
+  return `${Math.floor(diff / 86400)}d`;
+}
 
 type Kpi = { label: string; value: string; delta?: string; tone?: "teal" | "amber" | "blue" | "rose" };
 
@@ -45,6 +97,7 @@ export default async function DashboardPage() {
 
   const kpis = kpisFor(user.role, user.volunteerSubRole);
   const greeting = user.name.split(" ")[0];
+  const activity = await getRecentActivity();
 
   return (
     <div className="max-w-6xl">
@@ -79,46 +132,32 @@ export default async function DashboardPage() {
         ))}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-6">
-        <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+      <div className="mt-6">
+        <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-semibold text-slate-900">Recent activity</h3>
-            <button className="text-xs text-teal-700 font-medium hover:underline">View all</button>
+            <span className="text-[11px] text-slate-400">
+              {activity.length} event{activity.length === 1 ? "" : "s"}
+            </span>
           </div>
-          <ul className="space-y-3">
-            {[
-              { t: "2m", msg: "Zone A reports crowd above capacity" },
-              { t: "14m", msg: "Water bottles below threshold (urgency 7.1)" },
-              { t: "28m", msg: "3 volunteers reassigned from Food → Entry Gate" },
-              { t: "1h", msg: "Issue #412 acknowledged by Zone B lead" },
-            ].map((a) => (
-              <li key={a.t} className="flex items-start gap-3 text-sm">
-                <span className="text-[11px] font-mono text-slate-400 w-10 shrink-0 pt-0.5">{a.t}</span>
-                <span className="text-slate-700">{a.msg}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
-          <h3 className="text-sm font-semibold text-slate-900 mb-4">Quick actions</h3>
-          <div className="space-y-2">
-            {(user.role === "organiser"
-              ? ["Create event", "Add inventory item", "Open parking", "Broadcast message"]
-              : user.role === "volunteer"
-              ? ["Check in", "Report issue", "View my schedule", "Request break"]
-              : ["Browse events", "Join carpool", "Report lost item", "View my pass"]
-            ).map((label) => (
-              <button
-                key={label}
-                className="w-full text-left px-3 py-2 rounded-lg text-sm text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 transition-colors"
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+          {activity.length === 0 ? (
+            <p className="text-sm text-slate-500">No activity yet. Reports, acknowledgements, and evacuations will show up here.</p>
+          ) : (
+            <ul className="space-y-3">
+              {activity.map((a, i) => (
+                <li key={i} className="flex items-start gap-3 text-sm">
+                  <span className="text-[11px] font-mono text-slate-400 w-10 shrink-0 pt-0.5">
+                    {relTime(a.when)}
+                  </span>
+                  <span className="text-slate-700">{a.msg}</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </div>
     </div>
   );
 }
+
+export const dynamic = "force-dynamic";

@@ -4,6 +4,11 @@
 /node_modules
 /.pnp
 .pnp.*
+
+# python
+solver/.venv/
+__pycache__/
+*.pyc
 .yarn/*
 !.yarn/patches
 !.yarn/plugins

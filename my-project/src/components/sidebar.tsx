@@ -14,27 +14,22 @@ function navForUser(user: SessionUser): NavItem[] {
   if (user.role === "organiser") {
     return [
       ...common,
-      { label: "Events", href: "/events", icon: <IconCalendar /> },
-      { label: "Zones", href: "/zones", icon: <IconLayers /> },
-      { label: "Volunteers", href: "/volunteers", icon: <IconUsers /> },
-      { label: "Inventory", href: "/inventory", icon: <IconBox /> },
-      { label: "Parking", href: "/parking", icon: <IconCar /> },
-      { label: "Lost & Found", href: "/lost-found", icon: <IconSearch /> },
+      { label: "Live Map", href: "/map", icon: <IconLayers /> },
       { label: "Issues", href: "/issues", icon: <IconAlert /> },
+      { label: "Parking", href: "/parking", icon: <IconCar /> },
+      { label: "Evacuation", href: "/evacuation", icon: <IconShield /> },
+      { label: "Volunteers", href: "/volunteers", icon: <IconUsers /> },
+      { label: "Fragility", href: "/fragility", icon: <IconShield /> },
     ];
   }
 
   if (user.role === "volunteer") {
-    const items: NavItem[] = [
+    return [
       ...common,
-      { label: "My Tasks", href: "/tasks", icon: <IconCheck /> },
-      { label: "My Zone", href: "/my-zone", icon: <IconLayers /> },
+      { label: "Live Map", href: "/map", icon: <IconLayers /> },
       { label: "Issues", href: "/issues", icon: <IconAlert /> },
+      { label: "Evacuation", href: "/evacuation", icon: <IconShield /> },
     ];
-    if (user.volunteerSubRole === "team_lead") {
-      items.splice(2, 0, { label: "My Team", href: "/team", icon: <IconUsers /> });
-    }
-    return items;
   }
 
   // participant / attendee
@@ -173,6 +168,13 @@ function IconCheck() {
   return (
     <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+function IconShield() {
+  return (
+    <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
     </svg>
   );
 }
