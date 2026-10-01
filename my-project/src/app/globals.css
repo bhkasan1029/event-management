@@ -1,26 +1,38 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+@theme {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+
+  --color-brand-navy: #0f172a;
+  --color-brand-navy-muted: #1e293b;
+  --color-brand-surface: #ffffff;
+  --color-brand-bg-light: #f6fafe;
+  --color-brand-bg-subtle: #f0f4f8;
+  --color-brand-border: #e2e8f0;
+  --color-brand-teal: #0d9488;
+  --color-brand-mint-bg: #ecfdf5;
+  --color-brand-mint-text: #047857;
+  --color-brand-amber: #d97706;
+  --color-brand-amber-bg: #fef3c7;
+  --color-brand-blue: #2563eb;
+  --color-brand-blue-bg: #eff6ff;
+  --color-brand-coral: #e11d48;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+@keyframes pulseGlow {
+  0%, 100% { opacity: 0.8; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(1.08); }
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+@keyframes flowDash {
+  to { stroke-dashoffset: -20; }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+.flow-line {
+  stroke-dasharray: 4, 4;
+  animation: flowDash 1.2s linear infinite;
+}
+
+.pulse-dot {
+  animation: pulseGlow 2.5s ease-in-out infinite;
 }

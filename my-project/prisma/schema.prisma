@@ -1,0 +1,614 @@
+// Event Volunteer & Crowd Coordination Platform
+// Prisma schema generated from the PostgreSQL schema v2.
+//
+// After editing, run:
+//   npx prisma migrate dev --name init
+//
+// Partial unique index on vehicles(spot_id) WHERE exited_at IS NULL
+// is NOT expressible in this file — add it manually to the first migration:
+//   CREATE UNIQUE INDEX uniq_spot_occupied ON vehicles(spot_id) WHERE exited_at IS NULL;
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["views"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ============================ ENUMS ==================================
+
+enum UserRole {
+  organiser
+  volunteer
+  participant
+}
+
+enum VolunteerSubRole {
+  team_lead
+  normal
+}
+
+enum ZoneType {
+  gate
+  registration
+  stage
+  first_aid
+  parking
+  food
+  other
+}
+
+enum AssignmentStatus {
+  assigned
+  standby
+  completed
+  no_show
+  reassigned
+}
+
+enum AssignmentSource {
+  auto
+  manual
+  rebalance
+}
+
+enum GateCountSource {
+  manual
+  ticket_scan
+  camera
+  simulated
+}
+
+enum AmbulanceStatus {
+  available
+  dispatched
+  offline
+}
+
+enum IssueType {
+  medical
+  crowd
+  equipment
+  other
+}
+
+enum IssueStatus {
+  open
+  acknowledged
+  resolved
+}
+
+enum EvacuationStatus {
+  active
+  ended
+}
+
+enum VipReservationStatus {
+  reserved
+  arrived
+  cancelled
+}
+
+enum LostFoundKind {
+  lost
+  found
+}
+
+enum LostFoundStatus {
+  open
+  matched
+  returned
+}
+
+enum NotificationType {
+  inventory
+  clear_path
+  reassignment
+  escalation
+  out_of_zone
+  evacuation
+  general
+}
+
+// ============================ CORE ===================================
+
+model User {
+  id           Int      @id @default(autoincrement())
+  name         String
+  email        String   @unique
+  phone        String?
+  passwordHash     String            @map("password_hash")
+  role             UserRole          @default(volunteer)
+  volunteerSubRole VolunteerSubRole? @map("volunteer_sub_role")
+  skills           String[]          @default([])
+  maxHours     Int?     @default(8) @map("max_hours")
+  reliability  Decimal? @default(1.00) @db.Decimal(3, 2)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  eventsCreated       Event[]                @relation("EventCreatedBy")
+  eventsCoordinated   Event[]                @relation("EventHeadCoordinator")
+  zonesLed            Zone[]                 @relation("ZoneLead")
+  availability        Availability[]
+  preferences         VolunteerPreference[]
+  assignments         Assignment[]
+  inventoryLogs       InventoryLog[]
+  issuesReported      Issue[]                @relation("IssueReportedBy")
+  issuesAssigned      Issue[]                @relation("IssueAssignedTo")
+  evacuationsStarted  Evacuation[]
+  notifications       Notification[]
+  liveLocation        LiveLocation?
+  carpoolsCreated     CarpoolGroup[]
+  carpoolMemberships  CarpoolMember[]
+  chatMessages        ChatMessage[]
+  lostFoundReports    LostFoundItem[]
+
+  @@map("users")
+}
+
+model Event {
+  id                 Int       @id @default(autoincrement())
+  name               String
+  venue              String?
+  startsAt           DateTime? @map("starts_at") @db.Timestamptz(6)
+  endsAt             DateTime? @map("ends_at") @db.Timestamptz(6)
+  centerLat          Float?    @map("center_lat")
+  centerLng          Float?    @map("center_lng")
+  createdById        Int?      @map("created_by")
+  headCoordinatorId  Int?      @map("head_coordinator_id")
+
+  createdBy        User? @relation("EventCreatedBy",       fields: [createdById],       references: [id])
+  headCoordinator  User? @relation("EventHeadCoordinator", fields: [headCoordinatorId], references: [id])
+
+  zones            Zone[]
+  timeslots        Timeslot[]
+  tasks            Task[]
+  riskReports      RiskReport[]
+  inventoryItems   InventoryItem[]
+  ambulances       Ambulance[]
+  issues           Issue[]
+  venueNodes       VenueNode[]
+  evacuations      Evacuation[]
+  parkingSpots    ParkingSpot[]
+  vehicles         Vehicle[]
+  vipReservations  VipReservation[]
+  lostFoundItems   LostFoundItem[]
+  carpoolGroups    CarpoolGroup[]
+
+  @@map("events")
+}
+
+model Zone {
+  id        Int       @id @default(autoincrement())
+  eventId   Int?      @map("event_id")
+  name      String
+  type      ZoneType  @default(other)
+  polygon   Json?
+  leadId    Int?      @map("lead_id")
+  priority  Int?      @default(1)
+  capacity  Int?
+
+  event  Event? @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  lead   User?  @relation("ZoneLead", fields: [leadId], references: [id])
+
+  preferences     VolunteerPreference[]
+  tasks           Task[]
+  inventoryItems  InventoryItem[]
+  gateCounts      GateCount[]
+  issues          Issue[]
+  venueNodes      VenueNode[]
+  lostFoundItems  LostFoundItem[]
+  liveLocations   LiveLocation[]
+
+  @@map("zones")
+}
+
+model Timeslot {
+  id        Int      @id @default(autoincrement())
+  eventId   Int?     @map("event_id")
+  label     String
+  startsAt  DateTime @map("starts_at") @db.Timestamptz(6)
+  endsAt    DateTime @map("ends_at")   @db.Timestamptz(6)
+
+  event        Event?         @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  availability Availability[]
+  tasks        Task[]
+
+  @@map("timeslots")
+}
+
+model Availability {
+  userId     Int @map("user_id")
+  timeslotId Int @map("timeslot_id")
+
+  user     User     @relation(fields: [userId],     references: [id], onDelete: Cascade)
+  timeslot Timeslot @relation(fields: [timeslotId], references: [id], onDelete: Cascade)
+
+  @@id([userId, timeslotId])
+  @@map("availability")
+}
+
+model VolunteerPreference {
+  userId Int  @map("user_id")
+  zoneId Int  @map("zone_id")
+  rank   Int? @default(1)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  zone Zone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  @@id([userId, zoneId])
+  @@map("volunteer_preferences")
+}
+
+// ========================= ASSIGNMENT ================================
+
+model Task {
+  id             Int     @id @default(autoincrement())
+  eventId        Int?    @map("event_id")
+  zoneId         Int?    @map("zone_id")
+  timeslotId     Int?    @map("timeslot_id")
+  title          String
+  requiredSkill  String? @map("required_skill")
+  needed         Int     @default(1)
+
+  event    Event?    @relation(fields: [eventId],    references: [id], onDelete: Cascade)
+  zone     Zone?     @relation(fields: [zoneId],     references: [id], onDelete: Cascade)
+  timeslot Timeslot? @relation(fields: [timeslotId], references: [id], onDelete: Cascade)
+
+  assignments Assignment[]
+
+  @@index([timeslotId], map: "idx_tasks_timeslot")
+  @@map("tasks")
+}
+
+model Assignment {
+  id         Int               @id @default(autoincrement())
+  taskId     Int?              @map("task_id")
+  userId     Int?              @map("user_id")
+  status     AssignmentStatus  @default(assigned)
+  source     AssignmentSource? @default(auto)
+  assignedAt DateTime          @default(now()) @map("assigned_at") @db.Timestamptz(6)
+
+  task Task? @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, userId])
+  @@index([userId], map: "idx_assign_user")
+  @@index([taskId], map: "idx_assign_task")
+  @@map("assignments")
+}
+
+model RiskReport {
+  id        Int      @id @default(autoincrement())
+  eventId   Int?     @map("event_id")
+  runs      Int?     @default(100)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  results   Json
+
+  event Event? @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@map("risk_reports")
+}
+
+// ========================== INVENTORY ================================
+
+model InventoryItem {
+  id              Int      @id @default(autoincrement())
+  eventId         Int?     @map("event_id")
+  zoneId          Int?     @map("zone_id")
+  name            String
+  unit            String?  @default("pcs")
+  quantity        Int      @default(0)
+  threshold       Int      @default(0)
+  usagePerPerson  Decimal? @default(0) @map("usage_per_person") @db.Decimal(6, 3)
+  updatedAt       DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  event Event? @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  zone  Zone?  @relation(fields: [zoneId],  references: [id])
+
+  logs InventoryLog[]
+
+  @@map("inventory_items")
+}
+
+model InventoryLog {
+  id        Int      @id @default(autoincrement())
+  itemId    Int?     @map("item_id")
+  change    Int
+  reason    String?
+  createdBy Int?     @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  item    InventoryItem? @relation(fields: [itemId],    references: [id], onDelete: Cascade)
+  creator User?          @relation(fields: [createdBy], references: [id])
+
+  @@map("inventory_logs")
+}
+
+model GateCount {
+  id             Int             @id @default(autoincrement())
+  zoneId         Int?            @map("zone_id")
+  count          Int
+  windowStart    DateTime        @map("window_start") @db.Timestamptz(6)
+  windowMinutes  Int?            @default(5) @map("window_minutes")
+  source         GateCountSource? @default(manual)
+
+  zone Zone? @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  @@index([zoneId, windowStart(sort: Desc)], map: "idx_gate_counts_time")
+  @@map("gate_counts")
+}
+
+// ==================== MEDICAL & ESCALATION ===========================
+
+model Ambulance {
+  id       Int             @id @default(autoincrement())
+  eventId  Int?            @map("event_id")
+  label    String
+  lat      Float?
+  lng      Float?
+  nodeId   Int?            @map("node_id")
+  status   AmbulanceStatus? @default(available)
+
+  event  Event?     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  node   VenueNode? @relation(fields: [nodeId],  references: [id])
+
+  issues Issue[]
+
+  @@map("ambulances")
+}
+
+model Issue {
+  id              Int          @id @default(autoincrement())
+  eventId         Int?         @map("event_id")
+  zoneId          Int?         @map("zone_id")
+  type            IssueType
+  description     String?
+  lat             Float?
+  lng             Float?
+  reportedById    Int?         @map("reported_by")
+  assignedToId    Int?         @map("assigned_to")
+  escalationLevel Int?         @default(0) @map("escalation_level")
+  escalateAt      DateTime?    @map("escalate_at") @db.Timestamptz(6)
+  status          IssueStatus? @default(open)
+  ambulanceId    Int?         @map("ambulance_id")
+  route           Json?
+  createdAt       DateTime     @default(now())    @map("created_at")      @db.Timestamptz(6)
+  acknowledgedAt  DateTime?    @map("acknowledged_at") @db.Timestamptz(6)
+  resolvedAt      DateTime?    @map("resolved_at")     @db.Timestamptz(6)
+
+  event      Event?     @relation(fields: [eventId],      references: [id], onDelete: Cascade)
+  zone       Zone?      @relation(fields: [zoneId],       references: [id])
+  reportedBy User?      @relation("IssueReportedBy", fields: [reportedById], references: [id])
+  assignedTo User?      @relation("IssueAssignedTo", fields: [assignedToId], references: [id])
+  ambulance  Ambulance? @relation(fields: [ambulanceId], references: [id])
+
+  @@index([status], map: "idx_issues_open")
+  @@map("issues")
+}
+
+// ================== VENUE GRAPH & EVACUATION =========================
+
+model VenueNode {
+  id       Int      @id @default(autoincrement())
+  eventId  Int?     @map("event_id")
+  name     String?
+  lat      Float
+  lng      Float
+  zoneId   Int?     @map("zone_id")
+  isExit   Boolean? @default(false) @map("is_exit")
+
+  event Event? @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  zone  Zone?  @relation(fields: [zoneId],  references: [id])
+
+  ambulances  Ambulance[]
+  edgesFrom   VenueEdge[] @relation("EdgeFromNode")
+  edgesTo     VenueEdge[] @relation("EdgeToNode")
+
+  @@map("venue_nodes")
+}
+
+model VenueEdge {
+  id        Int      @id @default(autoincrement())
+  fromNode  Int?     @map("from_node")
+  toNode    Int?     @map("to_node")
+  lengthM   Decimal  @map("length_m") @db.Decimal(8, 2)
+  widthM    Decimal? @default(3) @map("width_m") @db.Decimal(5, 2)
+  isBlocked Boolean? @default(false) @map("is_blocked")
+
+  from VenueNode? @relation("EdgeFromNode", fields: [fromNode], references: [id], onDelete: Cascade)
+  to   VenueNode? @relation("EdgeToNode",   fields: [toNode],   references: [id], onDelete: Cascade)
+
+  @@index([fromNode], map: "idx_edges_from")
+  @@map("venue_edges")
+}
+
+model Evacuation {
+  id              Int                @id @default(autoincrement())
+  eventId         Int?               @map("event_id")
+  triggeredById   Int?               @map("triggered_by")
+  reason          String?
+  blockedEdgeIds  Int[]              @default([]) @map("blocked_edge_ids")
+  plan            Json?
+  status          EvacuationStatus?  @default(active)
+  createdAt       DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  endedAt         DateTime?          @map("ended_at") @db.Timestamptz(6)
+
+  event        Event? @relation(fields: [eventId],       references: [id], onDelete: Cascade)
+  triggeredBy  User?  @relation(fields: [triggeredById], references: [id])
+
+  @@map("evacuations")
+}
+
+// =========================== PARKING =================================
+
+model ParkingSpot {
+  id       Int      @id @default(autoincrement())
+  eventId  Int?     @map("event_id")
+  label    String
+  lot      String?
+  isVip    Boolean? @default(false) @map("is_vip")
+  lat      Float?
+  lng      Float?
+
+  event Event? @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  vehicles        Vehicle[]
+  vipReservations VipReservation[]
+
+  @@map("parking_spots")
+}
+
+model Vehicle {
+  id         Int       @id @default(autoincrement())
+  eventId    Int?      @map("event_id")
+  plate      String
+  ownerName  String?   @map("owner_name")
+  spotId     Int?      @map("spot_id")
+  isVip      Boolean?  @default(false) @map("is_vip")
+  enteredAt  DateTime  @default(now()) @map("entered_at") @db.Timestamptz(6)
+  exitedAt   DateTime? @map("exited_at") @db.Timestamptz(6)
+
+  event Event?       @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  spot  ParkingSpot? @relation(fields: [spotId],  references: [id])
+
+  @@map("vehicles")
+}
+
+model VipReservation {
+  id               Int                   @id @default(autoincrement())
+  eventId          Int?                  @map("event_id")
+  guestName        String                @map("guest_name")
+  plate            String?
+  spotId           Int?                  @map("spot_id")
+  expectedArrival  DateTime?             @map("expected_arrival") @db.Timestamptz(6)
+  status           VipReservationStatus? @default(reserved)
+
+  event Event?       @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  spot  ParkingSpot? @relation(fields: [spotId],  references: [id])
+
+  @@map("vip_reservations")
+}
+
+// ========================= LOST & FOUND ==============================
+
+model LostFoundItem {
+  id             Int              @id @default(autoincrement())
+  eventId        Int?             @map("event_id")
+  kind           LostFoundKind
+  title          String
+  description    String?
+  category       String?
+  imageUrl       String?          @map("image_url")
+  zoneId         Int?             @map("zone_id")
+  reportedById   Int?             @map("reported_by")
+  contact        String?
+  status         LostFoundStatus? @default(open)
+  matchedItemId  Int?             @map("matched_item_id")
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  event        Event?         @relation(fields: [eventId],       references: [id], onDelete: Cascade)
+  zone         Zone?          @relation(fields: [zoneId],        references: [id])
+  reportedBy   User?          @relation(fields: [reportedById],  references: [id])
+  matchedItem  LostFoundItem? @relation("LostFoundMatch", fields: [matchedItemId], references: [id])
+  matchedBy    LostFoundItem[] @relation("LostFoundMatch")
+
+  @@map("lost_found_items")
+}
+
+// ======================== NOTIFICATIONS ==============================
+
+model Notification {
+  id            Int               @id @default(autoincrement())
+  userId        Int?              @map("user_id")
+  type          NotificationType
+  title         String
+  body          String?
+  urgencyScore  Decimal?          @map("urgency_score") @db.Decimal(5, 2)
+  data          Json?
+  readAt        DateTime?         @map("read_at") @db.Timestamptz(6)
+  createdAt     DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId], map: "idx_notif_user_unread")
+  @@map("notifications")
+}
+
+// ========================= EXPERIMENTAL ==============================
+
+model LiveLocation {
+  userId    Int      @id @map("user_id")
+  lat       Float
+  lng       Float
+  zoneId    Int?     @map("zone_id")
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  user User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  zone Zone? @relation(fields: [zoneId], references: [id])
+
+  @@map("live_locations")
+}
+
+model CarpoolGroup {
+  id             Int       @id @default(autoincrement())
+  eventId        Int?      @map("event_id")
+  name           String
+  originArea     String?   @map("origin_area")
+  departureTime  DateTime? @map("departure_time") @db.Timestamptz(6)
+  seats          Int?
+  createdById    Int?      @map("created_by")
+
+  event     Event? @relation(fields: [eventId],     references: [id], onDelete: Cascade)
+  createdBy User?  @relation(fields: [createdById], references: [id])
+
+  members  CarpoolMember[]
+  messages ChatMessage[]
+
+  @@map("carpool_groups")
+}
+
+model CarpoolMember {
+  groupId Int @map("group_id")
+  userId  Int @map("user_id")
+
+  group CarpoolGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User         @relation(fields: [userId],  references: [id], onDelete: Cascade)
+
+  @@id([groupId, userId])
+  @@map("carpool_members")
+}
+
+model ChatMessage {
+  id        Int      @id @default(autoincrement())
+  groupId   Int?     @map("group_id")
+  userId    Int?     @map("user_id")
+  message   String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  group CarpoolGroup? @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User?         @relation(fields: [userId],  references: [id])
+
+  @@index([groupId, createdAt], map: "idx_chat_group_time")
+  @@map("chat_messages")
+}
+
+// ============================= VIEW ==================================
+// Mirrors the parking_status view from the SQL schema.
+// Prisma needs `previewFeatures = ["views"]` (set above) and the
+// view itself to exist in the database (your SQL already creates it).
+
+view ParkingStatus {
+  id           Int     @unique
+  label        String
+  lot          String?
+  isVip        Boolean? @map("is_vip")
+  status       String
+  plate        String?
+  reservedFor  String?  @map("reserved_for")
+
+  @@map("parking_status")
+}
