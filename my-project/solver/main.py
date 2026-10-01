@@ -1,103 +1,161 @@
+# solver/main.py
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from ortools.sat.python import cp_model
 
 app = FastAPI()
 
+# ---------- weights: coverage >> fairness > consecutive > proficiency > preference ----------
+W_SHORT, W_FAIR, W_CONSEC, W_PROF, W_PREF = 1000, 20, 10, 3, 1
+
+
 class User(BaseModel):
     id: int
-    skills: list[str]
-    maxHours: int
-    slots: list[int]                 # availability: timeslot ids
-    prefs: dict[int, int] = {}       # zone_id -> rank (1 = best)
+    skills: list[str] = []
+    levels: dict[str, int] = {}      # optional proficiency: {"medical": 4}
+    maxHours: float = 8
+    slots: list[int] = []            # timeslot ids the user is available for
+    prefs: dict[int, int] = {}       # zone_id -> rank (1 = most preferred)
+
 
 class Slot(BaseModel):
     id: int
     hours: float
 
+
 class Task(BaseModel):
     id: int
     zoneId: int
     slotId: int
-    skill: str | None
-    needed: int
+    skill: str | None = None
+    needed: int = 1
+    minLevel: int = 1                # optional minimum proficiency
+
 
 class Payload(BaseModel):
     users: list[User]
     slots: list[Slot]
     tasks: list[Task]
-    adjacent: list[tuple[int, int]]  # pairs of back-to-back timeslot ids
+    adjacent: list[tuple[int, int]] = []
     timeLimit: float = 5.0
+    avoidConsecutive: bool = True
 
-@app.post("/solve")
-def solve(p: Payload):
+
+def skill_level(u: User, skill: str) -> int:
+    """0 = doesn't have the skill. Skills without a level count as level 1."""
+    if skill in u.levels:
+        return u.levels[skill]
+    return 1 if skill in u.skills else 0
+
+
+def solve_model(p: Payload) -> dict:
     m = cp_model.CpModel()
     hours = {s.id: s.hours for s in p.slots}
-    x, by_user_slot, by_task = {}, {}, {}
+    task_by_id = {t.id: t for t in p.tasks}
 
-    # decision vars only for eligible (user, task) pairs: hard constraints
-    for t in p.tasks:
-        for u in p.users:
-            if t.slotId in u.slots and (t.skill is None or t.skill in u.skills):
-                v = m.NewBoolVar(f"x_{u.id}_{t.id}")
-                x[u.id, t.id] = v
-                by_user_slot.setdefault((u.id, t.slotId), []).append(v)
-                by_task.setdefault(t.id, []).append(v)
+    x = {}                           # (user_id, task_id) -> BoolVar
+    by_user_slot: dict = {}          # (user_id, slot_id) -> [vars]
+    by_task: dict = {}               # task_id -> [vars]
+    by_user: dict = {}               # user_id -> [(var, task)]
+    prof_cost = []
+    pref_cost = []
 
-    # 1. at most one task per user per timeslot
+    # ---- 1. Hard constraints: only create variables for eligible pairs ----
+    for u in p.users:
+        avail = set(u.slots)
+        for t in p.tasks:
+            if t.slotId not in avail:
+                continue
+            lvl = 0
+            if t.skill is not None:
+                lvl = skill_level(u, t.skill)
+                if lvl < max(1, t.minLevel):
+                    continue
+            v = m.NewBoolVar(f"x_{u.id}_{t.id}")
+            x[u.id, t.id] = v
+            by_user_slot.setdefault((u.id, t.slotId), []).append(v)
+            by_task.setdefault(t.id, []).append(v)
+            by_user.setdefault(u.id, []).append((v, t))
+
+            # soft cost: prefer higher proficiency (level 5 -> 0, level 1 -> 4)
+            if t.skill is not None:
+                prof_cost.append((5 - min(lvl, 5)) * v)
+            # soft cost: preference rank (1 -> 0, unranked -> 5)
+            rank = u.prefs.get(t.zoneId)
+            pref_cost.append((min(rank - 1, 4) if rank else 5) * v)
+
+    # ---- 2. At most one task per user per timeslot ----
     for vs in by_user_slot.values():
         m.Add(sum(vs) <= 1)
 
-    # 2. task coverage, with a shortfall variable so the model never goes infeasible
+    # ---- 3. Coverage, with a shortfall var so the model is never infeasible ----
     short = {}
     for t in p.tasks:
         short[t.id] = m.NewIntVar(0, t.needed, f"short_{t.id}")
         m.Add(sum(by_task.get(t.id, [])) + short[t.id] == t.needed)
 
-    # 3. max hours per user
+    # ---- 4. Max hours per user + load for fairness ----
     load = {}
     for u in p.users:
-        mine = [(v, next(tt.slotId for tt in p.tasks if tt.id == tid))
-                for (uid, tid), v in x.items() if uid == u.id]
-        load[u.id] = sum(v for v, _ in mine)
-        m.Add(sum(int(hours[s] * 10) * v for v, s in mine) <= u.maxHours * 10)
+        pairs = by_user.get(u.id, [])
+        if not pairs:
+            continue
+        load[u.id] = sum(v for v, _ in pairs)
+        m.Add(sum(int(hours[t.slotId] * 10) * v for v, t in pairs) <= int(u.maxHours * 10))
 
-    # 4. soft: avoid consecutive shifts
+    # ---- 5. Soft: avoid consecutive shifts ----
     consec = []
-    for u in p.users:
-        for a, b in p.adjacent:
-            wa, wb = by_user_slot.get((u.id, a)), by_user_slot.get((u.id, b))
-            if wa and wb:
-                c = m.NewBoolVar(f"c_{u.id}_{a}_{b}")
-                m.Add(c >= sum(wa) + sum(wb) - 1)   # c = 1 if both worked
-                consec.append(c)
+    if p.avoidConsecutive:
+        for u in p.users:
+            for a, b in p.adjacent:
+                wa, wb = by_user_slot.get((u.id, a)), by_user_slot.get((u.id, b))
+                if wa and wb:
+                    c = m.NewBoolVar(f"c_{u.id}_{a}_{b}")
+                    m.Add(c >= sum(wa) + sum(wb) - 1)   # c = 1 if both slots worked
+                    consec.append(c)
 
-    # 5. soft: fairness = minimise the busiest volunteer's load
-    max_load = m.NewIntVar(0, len(p.tasks), "max_load")
-    for u in p.users:
-        m.Add(max_load >= load[u.id])
+    # ---- 6. Soft: fairness = minimise the busiest volunteer's load ----
+    max_load = m.NewIntVar(0, max(1, len(p.tasks)), "max_load")
+    for expr in load.values():
+        m.Add(max_load >= expr)
 
-    # 6. soft: preference (rank 1 best -> cost 0, unranked -> cost 5)
-    zone = {t.id: t.zoneId for t in p.tasks}
-    pref_cost = sum(min(p_rank - 1, 4) * v if (p_rank := u.prefs.get(zone[tid])) else 5 * v
-                    for (uid, tid), v in x.items()
-                    for u in p.users if u.id == uid)
+    m.Minimize(
+        W_SHORT * sum(short.values())
+        + W_FAIR * max_load
+        + W_CONSEC * sum(consec)
+        + W_PROF * sum(prof_cost)
+        + W_PREF * sum(pref_cost)
+    )
 
-    # weights: coverage >> fairness > consecutive > preference
-    m.Minimize(1000 * sum(short.values()) + 20 * max_load
-               + 10 * sum(consec) + 1 * pref_cost)
+    # ---- Solve ----
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = p.timeLimit
+    solver.parameters.num_workers = 8
+    status = solver.Solve(m)
 
-    s = cp_model.CpSolver()
-    s.parameters.max_time_in_seconds = p.timeLimit
-    s.parameters.num_workers = 8
-    status = s.Solve(m)
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         return {"status": "infeasible", "assignments": [], "unfilled": []}
 
+    unfilled = [
+        {"taskId": tid, "zoneId": task_by_id[tid].zoneId, "missing": solver.Value(v)}
+        for tid, v in short.items() if solver.Value(v) > 0
+    ]
     return {
         "status": "optimal" if status == cp_model.OPTIMAL else "feasible",
-        "assignments": [{"taskId": t, "userId": u} for (u, t), v in x.items() if s.Value(v)],
-        "unfilled": [{"taskId": i, "missing": s.Value(v)} for i, v in short.items() if s.Value(v)],
-        "consecutiveShifts": sum(s.Value(c) for c in consec),
-        "maxLoad": s.Value(max_load),
+        "assignments": [
+            {"taskId": t, "userId": u} for (u, t), v in x.items() if solver.Value(v)
+        ],
+        "unfilled": unfilled,
+        "consecutiveShifts": sum(solver.Value(c) for c in consec),
+        "maxLoad": solver.Value(max_load),
     }
+
+
+@app.post("/solve")
+def solve(p: Payload):
+    return solve_model(p)
+
+
+@app.get("/health")
+def health():
+    return {"ok": True}
